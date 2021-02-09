@@ -1,0 +1,240 @@
+---
+title: "Sample_code"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+
+```{r}
+library(ggplot2)
+library(MASS)
+library(LearnBayes)
+library(kableExtra)
+```
+
+```{r}
+mydata <- read.delim('Covid19.txt',header=TRUE, sep=',')
+
+ni = mydata$Total.cases
+yi = mydata$Deaths
+ci = mydata$Population
+N = length(mydata$County)
+```
+
+```{r}
+######## Simple Data exploration 
+
+
+ggplot(data=mydata,aes(x=Population/1000,y=log(Total.cases))) + geom_point() +
+  xlab("Population") + 
+  ylab("log(cases)") + ggtitle("log(Cases) vs Population")
+
+sd(mydata$Total.cases) #1285.656
+range(mydata$Total.cases) #0 to 9420
+quantile(mydata$Total.cases)# 0.0, 5.5, 44.0, 279.0 9420.0 
+
+par(mfrow= c(1,2))
+boxplot(log(mydata$Total.cases),ylab = "Total Cases")
+boxplot(log(mydata$Population),ylab = "Total Population")
+hist(mydata$Total.cases)
+
+```
+
+
+```{r}
+a.alpha = 200
+b.alpha = 1
+a.beta = 0.5
+b.beta = 0.2
+
+N = nrow(mydata)
+
+#################### sample from p(alpha,beta|n) ############################
+
+alpha.beta.dist <- function(theta,data = mydata){
+  alpha <- exp(theta[1])
+  beta <- exp(theta[2])
+  log.posterior = (a.alpha-1)*log(alpha)+(a.beta-1)*log(beta)-b.alpha*alpha-b.beta*beta+sum(lgamma(alpha+ni)-(alpha+ni)*log((ci/10^3)+beta)) +N*alpha*log(beta)-N*lgamma(alpha)  + sum(theta)
+  return (log.posterior)
+}
+
+
+######################## SIR Sampling ##########################
+fit.sir = laplace(alpha.beta.dist,c(1/2,1/2)) 
+tpar = list(m=fit.sir$mode, var = 2*fit.sir$var,df = 4)
+
+theta = rmt(N, mean = c(tpar$m), S = tpar$var, df = tpar$df)
+lf = alpha.beta.dist(theta)
+lp = dmt(theta, mean = c(tpar$m), S = tpar$var, df = tpar$df,log = TRUE)
+md = max(lf - lp)
+wt = exp(lf - lp - md)
+
+
+probs = wt/sum(wt)
+indices = sample(1:N, size = N, prob = probs, replace = TRUE)
+theta.s = theta[indices,]
+theta.s = sir(alpha.beta.dist, tpar, 10000, mydata)
+
+weight=exp()
+probs=weight/sum(weight)
+indices=sample(1:m,size=m,prob=probs,replace=TRUE)
+theta.s=theta[indices,]
+
+theta.s=theta[indices,]
+S=bayes.influence(theta.s,mydata)
+
+theta.store = exp(theta.s)
+plot(theta.store[,2],type = "l")
+abline(h=mean(theta.store[,2]),col="red")
+
+par(mfrow=c(1,2))
+
+hist(theta.store[,1], main = expression("Histogram of "~alpha), xlab = expression(paste(alpha)))
+abline(v=mean(theta.store[,1]),col = "red")
+hist(theta.store[,2], main = expression("Histogram of" ~ beta), xlab = expression(paste(beta)))
+abline(v=mean(theta.store[,2]),col = "red")
+
+```
+
+
+```{r}
+################ Sample from p(lambda|alpha,beta,n)#################
+
+lam = seq(0,100,length = 10000)
+x = sum(ni)
+y = sum(ci)
+N = length(ni)
+#alpha should be from the previous simulation 
+#beta should be from the previous simulation 
+alpha = theta.store[,1]
+beta= theta.store[,2]
+lambda_post<- rgamma(lam,shape = x+alpha,rate = beta+y/10^3) #this is the posterior distribution 
+#Plot the distribution 
+par(las=2)
+par(mfrow = c(1,2))
+plot(lam,lambda_post, type="l",
+     ylab="Density", xlab=expression(paste(lambda)), main=expression("Density of " ~ lambda))
+abline(h=mean(lambda_post),col = "red")
+hist(lambda_post, main = expression("Histogram of "~lambda), xlab = expression(paste(lambda)))
+abline(v=mean(lambda_post),col = "red")
+
+################### Make it into ta column with 58 ####################
+lambda.samples <- matrix(NA, nrow = length(alpha), ncol = N)
+for (i in 1:N){
+  c <- mydata$Population
+  n <- mydata$Total.cases
+  alpha.postthet <- alpha + n[i]
+  beta.postthet <- beta + c[i]/10^3
+  
+  lambda.samples[,i] <- rgamma(n = length(alpha), shape = alpha.postthet,rate = beta.postthet)
+}
+
+bayes.influence(theta.store,mydata)
+```
+
+```{r}
+########## Now with the new lambda, sample the new theta #########
+a = 0.001
+b = 0.001
+log.theta.full.after <- function(theta.tilde){
+  lambda = lambda.store.after
+  theta.full = exp(theta.tilde[1])
+  log_lik = as.numeric()
+  for(i in 1:58){
+    log_lik[i] <- (mydata$Deaths[i]+mydata$Total.cases[i]+mu.sir[i]*tau.sir[i]-1)*log(theta.full) + (mydata$Total.cases[i]-mydata$Deaths[i]+tau.sir[i]*(1-mu.sir[i])-1) *(1-log(theta.full))-(theta.full*lambda[i]*mydata$Population[i]/1000)
+  }
+  
+  return(log_lik[i])
+  
+}
+niter <- 10000
+theta.store.after <- matrix(data = NA, nrow = niter, ncol = 1) 
+theta = 0.5
+var.tuning <- 0.01
+accept <- 0
+
+##Metropolis 
+## This step can be performed using the mcmc package in R 
+for(i in 1:niter){
+   prop <- mvrnorm(1, mu = log(theta), Sigma = var.tuning)
+   acceptance.prob <- min(exp(log.theta.full.after(prop) - log.theta.full.after(log(theta))), 1)
+   u <- runif(1)
+   if(u < acceptance.prob){
+       theta <- exp(prop) # was exp(prop) and this made units ridiculuous
+       accept <- accept+1
+   }else{
+      theta <- theta
+      accept <- accept
+    }
+   theta.store.after[i,] <- theta
+}
+
+plot(lam,theta.store.after, type="l",
+     ylab="Density", xlab="lambda", main="Density of theta|y")
+abline(h=mean(theta.store.after),col = "red")
+hist(theta.store.after, main = "Histogram of lambda", xlab = "lambda")
+abline(v=mean(theta.store.after),col = "red")
+
+
+```
+
+
+
+
+
+```{r}
+###################### Are there any differences between counties #########
+lambdas_w_county = mydata$County
+mn_lambdas=colMeans(lambda.samples * mydata$Population/1000)
+mn_ni=colMeans(ni.store)
+
+lambdas_w_county=data.frame(mydata$County,round(mn_lambdas,3), round(mn_ni),mydata$Total.cases)
+lambdas_w_county %>% kable(col.names = c("County", "Expected rate", "Model 1 Predicted cases", "Total cases")) %>%
+kable_styling(bootstrap_options = c("striped"), latex_options = "hold_position")
+
+
+##################### #calculate Bayesian Residual ################
+intercept=rep(1,length(x))
+logodds <- as.matrix(theta.store.after[2001:10000,1:2])%*%matrix(c(intercept,x),nrow=2,byrow=T)
+prob <- 1-exp(-exp(logodds)) 
+bayes_residual=prob
+for(i in 1:length(x)){
+  bayes_residual[,i]=(y[i]/n[i])-bayes_residual[,i]
+}
+
+#################### posterior prediction loss criteria ##########
+z=matrix(0,nrow=18000,ncol=8)
+for(i in 1:8){
+  x_cur=x[i]
+  n_cur=n[i]
+  for(j in 1:18000){
+    beta1_cur=theta.store.after[i+2000,1]
+    beta2_cur=theta.store.after[i+2000,2]
+    logodds = beta1_cur + beta2_cur*x_cur
+    prob <- 1-exp(-exp(logodds))
+    z[j,i]=rbinom(1,n_cur,prob)
+  }
+}
+
+exp_z=colMeans(z)
+good_of_fit=sum((y-exp_z)^2)
+exp_z_square=colMeans(z*z)
+penalty=sum(exp_z_square-exp_z^2)
+
+## choose a large k to balance the two part in loss
+loss=penalty+(1000/1001)*good_of_fit
+
+```
+
+
+
+
+
+
+
+
